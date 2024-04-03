@@ -1,22 +1,23 @@
-// Primero voy a hacer que el servidor reciba los argumentos de la linea de comandos
-// y luego voy a hacer que el servidor reciba los mensajes de los clientes y los imprima
-// en pantalla.
-#include <stdio.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <sys/socket.h> // Include the necessary header file
-#include <netinet/in.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <time.h> 
-#include <string.h> // Para memcmp
-#include <openssl/hmac.h>
+#include <stdio.h>      // Para printf, fprintf
+#include <stdbool.h>    // Para bool
+#include <stdlib.h>     // Para exit
+#include <stdint.h>     // Para uint64_t
+#include <sys/socket.h> // Para las funciones de socket
+#include <netinet/in.h> // Para las estructuras de direcciones de Internet
+#include <unistd.h>     // Para close, sleep
+#include <arpa/inet.h>  // Para las funciones de conversión de direcciones de Internet
+#include <time.h>       // Para time_t
+#include <string.h>     // Para memcmp, memset, memcpy
+#include <openssl/hmac.h> // Para las funciones de HMAC
 
 #define SHA1_BLOCK_SIZE 64 // Tamaño de bloque de SHA-1 en bytes
 #define SHA1_DIGEST_SIZE 20 // Tamaño de hash de SHA-1 en bytes
 
 #define FIVE_MINUTES_IN_SECONDS 300 // 5 minutos en segundos
+
+#define LOGIN_SIZE 255 // Tamaño máximo de un login
+
+#define SLEEP_TIME 30 // Tiempo de espera en segundos
 
 // Función para mostrar un mensaje de advertencia si la clave es demasiado corta
 void print_key_length_warning(size_t key_len) {
@@ -174,17 +175,6 @@ char *managePort(int argc, char *argv[]) {
     return port;
 }
 
-void openFile(char *file) {
-    // Abrir el fichero e imprimir el contenido del archivo
-    FILE *f = fopen(file, "r");
-    if (f == NULL) {
-        fprintf(stderr, "No se pudo abrir el archivo\n");
-        exit(EXIT_FAILURE);
-    }
-    fclose(f);
-    
-}
-
 uint64_t generateAndSendNonce(int fd) {
     uint64_t nonce;
     nonce = ((uint64_t)rand() << 32) | rand();
@@ -204,16 +194,42 @@ time_t receiveTime(int fd) {
 }
 
 void receiveLogin(int fd, char* login) {
-    recv(fd, login, 255, 0); // Recibir exactamente 255 bytes
+    recv(fd, login, LOGIN_SIZE, 0); // Recibir exactamente LOGIN_SIZE bytes
+}
+
+bool check_user_exists(char *file, char *login) {
+    FILE *f = fopen(file, "r");
+    if (f == NULL) {
+        fprintf(stderr, "No se pudo abrir el archivo de usuarios.\n");
+        return false; // false
+    }
+
+    char line[LOGIN_SIZE];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\n")] = 0;
+
+        char *line_login = strtok(line, ":");
+        if (line_login && strcmp(line_login, login) == 0) {
+            fclose(f);
+            return true; // true
+        }
+    }
+    // Imprimir un mensaje de error si no se encontró el usuario con el nombre del login
+    fprintf(stderr, "No se encontro el usuario con el login %s\n", login);
+    fclose(f);
+    return false; // false
 }
 
 char* findKey(char *file, char *login) {
+    if (!check_user_exists(file, login)) {
+        return NULL;
+    }
     FILE *f = fopen(file, "r");
     if (f == NULL) {
         fprintf(stderr, "No se pudo abrir el archivo\n");
         exit(EXIT_FAILURE);
     }
-    char line[255];
+    char line[LOGIN_SIZE];
     char *key = NULL;
     while (fgets(line, sizeof(line), f)) {
         char *token = strtok(line, ":");
@@ -337,13 +353,18 @@ void handleClientConnection(int fd, char *file) {
         
     } else{
         // Recibir el login del cliente
-        char login[255];
+        char login[LOGIN_SIZE];
         receiveLogin(fd, login);
 
         // Buscar la clave del login en el archivo
         char *key = findKey(file, login);
 
-
+        if (key == NULL) {
+            sleep(SLEEP_TIME);
+            sendFailure(fd);
+            return;
+        }
+        
         // Concatenar el nonce y el tiempo del cliente
         uint64_t data[2];
         concatenateNonceAndTime(nonce, T_client, data, sizeof(data));
@@ -416,11 +437,21 @@ void runServer(char *file, char *port) {
 
         // Aquí puedes manejar la comunicación con el cliente usando fd
         // Por ejemplo, puedes enviar y recibir datos usando send() y recv()
-
-        handleClientConnection(fd, file);
-
-        // Cerrar la conexión con el cliente
-        close(fd);
+        pid_t pid = fork();
+        if (pid == -1) {
+            perror("fork");
+            exit(EXIT_FAILURE);
+        } else if (pid == 0) {
+            // Cerrar el socket del servidor en el proceso hijo
+            close(sockfd);
+            // Manejar la conexión con el cliente
+            handleClientConnection(fd, file);
+            close(fd);
+            exit(EXIT_SUCCESS);
+        } else {
+            // Cerrar el socket del cliente en el proceso padre
+            close(fd);}
+        
     }
     // Cerrar el socket del servidor
     close(sockfd);
@@ -442,9 +473,6 @@ int main(int argc, char *argv[]) {
     if (!correctPort(port)) {
         exit(EXIT_FAILURE);
     }
-
-    // Ahora toca abrir el fichero y guardarlo en una estructura de datos
-    openFile(file);
 
     runServer(file, port);
     

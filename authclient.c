@@ -1,24 +1,25 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <arpa/inet.h>
-#include <sys/socket.h> // Include the necessary header file
-#include <netinet/in.h>
-#include <unistd.h>
-#include <string.h> // Para memcmp
-#include <openssl/hmac.h> // Para HMAC
-#include <openssl/crypto.h>
-#include <openssl/core_names.h>
-#include <openssl/err.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/params.h>
-#include <openssl/sha.h>
-#include <time.h> // Para time
-#include <stdbool.h> // Para bool
+#include <stdio.h>      // Para printf, fprintf
+#include <stdlib.h>     // Para exit
+#include <arpa/inet.h>  // Para las funciones de conversión de direcciones de Internet
+#include <sys/socket.h> // Para las funciones de socket
+#include <netinet/in.h> // Para las estructuras de direcciones de Internet
+#include <unistd.h>     // Para close
+#include <string.h>     // Para memcmp, memset, memcpy
+#include <openssl/hmac.h> // Para las funciones de HMAC
+#include <openssl/crypto.h> // Para las funciones de criptografía de OpenSSL
+#include <openssl/core_names.h> // Para los nombres de los parámetros de OpenSSL
+#include <openssl/err.h> // Para las funciones de manejo de errores de OpenSSL
+#include <openssl/evp.h> // Para las funciones de criptografía de alto nivel de OpenSSL
+#include <openssl/params.h> // Para las funciones de manejo de parámetros de OpenSSL
+#include <openssl/sha.h> // Para las funciones de SHA
+#include <time.h>       // Para time
+#include <stdbool.h>    // Para bool
 
 
 #define SHA1_BLOCK_SIZE 64 // Tamaño de bloque de SHA-1 en bytes
 #define SHA1_DIGEST_SIZE 20 // Tamaño de hash de SHA-1 en bytes
+
+#define LOGIN_SIZE 255 // Tamaño máximo de un login
 
 // Función para mostrar un mensaje de advertencia si la clave es demasiado corta
 void print_key_length_warning(size_t key_len) {
@@ -184,6 +185,27 @@ void receiveServerMessage(int sockfd) {
     printf("%s\n", message);
 }
 
+void handleAuthentication(int sockfd, unsigned char *key, char *login) {
+    uint64_t nonce = receiveNonce(sockfd);
+
+    // Calcular la HMACSHA1 del nonce concatenado con T
+    time_t T = getCurrentTime();
+
+    // Concatenar el nonce con T
+    uint64_t data[2];
+    concatenateNonceAndTime(nonce, T, data, sizeof(data));
+
+    // Calcular la HMACSHA1
+    unsigned char hmac[SHA1_DIGEST_SIZE];
+    calculateHMAC(key, (unsigned char*)data, sizeof(data), hmac);
+
+    // Enviar los datos al servidor
+    sendDataToServer(sockfd, hmac, T, login);
+
+    // Recibir SUCCESS o FAIL del servidor
+    receiveServerMessage(sockfd);
+}
+
 void runClient(char *login, unsigned char *key, char *ip, char *port) {
     struct sockaddr_in sin;
     int sockfd;
@@ -208,37 +230,19 @@ void runClient(char *login, unsigned char *key, char *ip, char *port) {
     // Aquí puedes manejar la comunicación con el servidor usando sockfd
     // Por ejemplo, puedes enviar y recibir datos usando send() y recv()
 
-    uint64_t nonce = receiveNonce(sockfd);
-
-    // Calcular la HMACSHA1 del nonce concatenado con T (T es un numero entero sin sifgno de 64 bits. Contiene una marca de tiempo con el "tiempo Unix" de la maquina obtenida con la llamada al sistema time(2)) con una key de SHA1_DIGEST_SIZE bytes la cual es argv[0]
-    // Primero obtenemos el tiempo actual
-    time_t T = getCurrentTime();
-
-    // Luego concatenamos el nonce con T
-    uint64_t data[2];
-    concatenateNonceAndTime(nonce, T, data, sizeof(data));
-
-    // Luego calculamos la HMACSHA1
-    unsigned char hmac[SHA1_DIGEST_SIZE];
-    calculateHMAC(key, (unsigned char*)data, sizeof(data), hmac);;
-
-    // Enviar los datos al servidor
-    sendDataToServer(sockfd, hmac, T, login);
-
-    // Recibir SUCCESS o FAIL del servidor
-    receiveServerMessage(sockfd);
+    handleAuthentication(sockfd, key, login);
     
     // Cerrar el socket
     close(sockfd);
 }
 
-// Funcion para rellenar con ceros login hasta 255 bytes
+// Funcion para rellenar con ceros login hasta LOGIN_SIZE bytes
 void rellenarLogin(char *login, char *output) {
     // Inicializar el array a ceros
-    memset(output, 0, 255);
+    memset(output, 0, LOGIN_SIZE);
 
     // Copiar el nombre de usuario en el array
-    strncpy(output, login, 255);
+    strncpy(output, login, LOGIN_SIZE);
 }
 
 bool argumentsCorrect(int argc, char *argv[]) {
@@ -250,7 +254,7 @@ bool argumentsCorrect(int argc, char *argv[]) {
 }
 
 char* getLogin(char *argv[]) {
-    static char login[255];
+    static char login[LOGIN_SIZE];
     rellenarLogin(argv[0], login);
     return login;
 }
